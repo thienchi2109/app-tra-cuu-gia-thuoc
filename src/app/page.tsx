@@ -4,7 +4,12 @@ import React, { useState, useEffect } from "react";
 import type { DrugData } from "@/types";
 import { COLUMN_HEADERS } from "@/types";
 import DrugDataTable from "@/components/DrugDataTable";
-import AIDrugSuggester from "@/components/AIDrugSuggester";
+// Conditional import for AI components to avoid build issues
+const AIDrugSuggester = React.lazy(() => 
+  import("@/components/AIDrugSuggester").catch(() => ({ 
+    default: () => <div>AI features not available</div> 
+  }))
+);
 import PharmaLogo from "@/components/PharmaLogo";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -524,10 +529,12 @@ export default function Home() {
         )}
       </main>
 
-      <AIDrugSuggester
-        open={isAISuggesterOpen}
-        onOpenChange={setIsAISuggesterOpen}
-      />
+      <React.Suspense fallback={<div>Loading AI features...</div>}>
+        <AIDrugSuggester
+          open={isAISuggesterOpen}
+          onOpenChange={setIsAISuggesterOpen}
+        />
+      </React.Suspense>
 
       <footer className="mt-12 text-center text-sm text-muted-foreground">
         <p>&copy; {new Date().getFullYear()} PharmaPrice Navigator. Optimized with Real-time Search ⚡</p>
