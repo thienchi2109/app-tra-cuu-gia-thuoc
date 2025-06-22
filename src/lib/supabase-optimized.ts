@@ -403,11 +403,14 @@ export async function exportSearchResults(
   advancedConfig: AdvancedSearchConfig,
   sortBy?: keyof SupabaseDrugData,
   sortOrder: 'asc' | 'desc' = 'asc',
-  maxLimit: number = 1000
+  maxLimit: number = 1000,
+  offset: number = 0
 ): Promise<{
   data: DrugData[];
   count: number;
   limited: boolean;
+  actualStart: number;
+  actualEnd: number;
 }> {
   try {
     let query = supabase
@@ -511,8 +514,8 @@ export async function exportSearchResults(
     const sortColumn = sortBy || 'id';
     query = query.order(sortColumn, { ascending: sortOrder === 'asc' });
 
-    // Limit to maxLimit
-    query = query.limit(maxLimit);
+    // Add offset and limit
+    query = query.range(offset, offset + maxLimit - 1);
 
     const { data, error, count } = await query;
 
@@ -522,12 +525,16 @@ export async function exportSearchResults(
     }
 
     const totalCount = count || 0;
-    const limited = totalCount > maxLimit;
+    const limited = totalCount > (offset + maxLimit);
+    const actualStart = offset + 1;
+    const actualEnd = Math.min(offset + maxLimit, totalCount);
 
     return {
       data: data?.map(transformSupabaseToUI) || [],
       count: totalCount,
-      limited
+      limited,
+      actualStart,
+      actualEnd
     };
   } catch (error) {
     console.error('Error exporting search results:', error);

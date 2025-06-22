@@ -5,11 +5,7 @@ import type { DrugData } from "@/types";
 import { COLUMN_HEADERS } from "@/types";
 import DrugDataTable from "@/components/DrugDataTable";
 // Conditional import for AI components to avoid build issues
-const AIDrugSuggester = React.lazy(() => 
-  import("@/components/AIDrugSuggester").catch(() => ({ 
-    default: () => <div>AI features not available</div> 
-  }))
-);
+
 import PharmaLogo from "@/components/PharmaLogo";
 import AuthGuard from "@/components/AuthGuard";
 import { Input } from "@/components/ui/input";
@@ -23,7 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DataTablePagination } from "@/components/DataTablePagination";
-import { Search, Lightbulb, Filter, X, FileText, Loader2, TrendingUp, TrendingDown, Clock, LogOut, Download } from "lucide-react";
+import { Search, Filter, X, FileText, Loader2, TrendingUp, TrendingDown, Clock, LogOut, Download } from "lucide-react";
 import * as XLSX from 'xlsx';
 import { useToast } from "@/hooks/use-toast";
 import { getDatabaseStats, getUniqueValues, exportSearchResults } from "@/lib/supabase-optimized";
@@ -43,9 +39,10 @@ const ADVANCED_FILTER_COLUMNS: Array<keyof DrugData> = [
 ];
 
 export default function Home() {
-  const [isAISuggesterOpen, setIsAISuggesterOpen] = useState(false);
+
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [selectedBatch, setSelectedBatch] = useState<number>(0); // 0-based batch index
   const [dbStats, setDbStats] = useState({ totalDrugs: 0, maxPrice: 0, minPrice: 0 });
   const [uniqueValues, setUniqueValues] = useState({
     dosageForms: [] as string[],
@@ -150,155 +147,143 @@ export default function Home() {
     setShowAdvancedSearch(prev => !prev);
   };
 
-  const handleExportExcel = async () => {
-    try {
-      setIsExporting(true);
-      
-      // Show loading toast
+  const displayedData = searchState.data;
+  const totalResults = searchState.count;
+  const totalPages = searchState.totalPages;
+
+  // Calculate batches for export
+  const batchSize = 1000;
+  const totalBatches = Math.ceil(totalResults / batchSize);
+  const batches = Array.from({ length: totalBatches }, (_, index) => {
+    const start = index * batchSize + 1;
+    const end = Math.min((index + 1) * batchSize, totalResults);
+    return { index, start, end, count: end - start + 1 };
+  });
+
+  // Export function with selected batch
+  const exportSelectedBatch = async () => {
+    if (selectedBatch >= totalBatches) {
       toast({
-        title: "Đang xuất Excel...",
-        description: "Vui lòng chờ trong giây lát",
+        title: "Lỗi xuất Excel",
+        description: "Batch được chọn không hợp lệ.",
+        variant: "destructive"
       });
+      return;
+    }
 
-      // Get all search results (max 1000)
-      const sortColumn = sortConfig?.key ? 
-        (() => {
-          const columnMap: Record<keyof DrugData, string> = {
-            id: 'id',
-            drugName: 'ten_thuoc',
-            activeIngredient: 'ten_hoat_chat',
-            concentration: 'nong_do',
-            gdklh: 'gdk_lh',
-            routeOfAdministration: 'duong_dung',
-            dosageForm: 'dang_bao_che',
-            expiryDate: 'han_dung',
-            manufacturer: 'ten_cssx',
-            manufacturingCountry: 'nuoc_san_xuat',
-            packaging: 'quy_cach',
-            unit: 'don_vi_tinh',
-            quantity: 'so_luong',
-            unitPrice: 'don_gia',
-            drugGroup: 'nhom_thuoc',
-            tbmt: 'ma_tbmt',
-            investor: 'chu_dau_tu',
-            contractorSelectionMethod: 'hinh_thuc_lcnt',
-            kqlcntUploadDate: 'ngay_dang_tai',
-            decisionNumber: 'so_quyet_dinh',
-            decisionDate: 'ngay_ban_hanh',
-            contractorNumber: 'so_nha_thau',
-            location: 'dia_diem',
-          };
-          return columnMap[sortConfig.key] as any;
-        })() : 'id';
-
-      const sortOrder = sortConfig?.direction === 'ascending' ? 'asc' : 'desc';
+    setIsExporting(true);
+    try {
+      const batch = batches[selectedBatch];
+      const offset = batch.start - 1; // Convert to 0-based offset
+      const limit = batch.count;
 
       const exportResult = await exportSearchResults(
         searchTerm,
         advancedConfig,
-        sortColumn,
-        sortOrder,
-        1000 // Max 1000 records
+        sortConfig?.key ? 
+          (() => {
+            const columnMap: Record<keyof DrugData, string> = {
+              id: 'id',
+              drugName: 'ten_thuoc',
+              activeIngredient: 'ten_hoat_chat',
+              concentration: 'nong_do',
+              gdklh: 'gdk_lh',
+              routeOfAdministration: 'duong_dung',
+              dosageForm: 'dang_bao_che',
+              expiryDate: 'han_dung',
+              manufacturer: 'ten_cssx',
+              manufacturingCountry: 'nuoc_san_xuat',
+              packaging: 'quy_cach',
+              unit: 'don_vi_tinh',
+              quantity: 'so_luong',
+              unitPrice: 'don_gia',
+              drugGroup: 'nhom_thuoc',
+              tbmt: 'ma_tbmt',
+              investor: 'chu_dau_tu',
+              contractorSelectionMethod: 'hinh_thuc_lcnt',
+              kqlcntUploadDate: 'ngay_dang_tai',
+              decisionNumber: 'so_quyet_dinh',
+              decisionDate: 'ngay_ban_hanh',
+              contractorNumber: 'so_nha_thau',
+              location: 'dia_diem',
+            };
+            return columnMap[sortConfig.key] as any;
+          })() : 'id',
+        sortConfig?.direction === 'ascending' ? 'asc' : 'desc',
+        limit,
+        offset
       );
 
       if (exportResult.data.length === 0) {
         toast({
           title: "Không có dữ liệu",
-          description: "Không có dữ liệu để xuất Excel",
+          description: "Không tìm thấy dữ liệu trong batch đã chọn.",
           variant: "destructive"
         });
         return;
       }
 
-      // Tạo worksheet với header tiếng Việt
-      const worksheetData = [
-        // Header row
-        Object.keys(COLUMN_HEADERS).map(key => COLUMN_HEADERS[key as keyof DrugData]),
-        // Data rows
-        ...exportResult.data.map(drug => [
-          drug.id,
-          drug.drugName,
-          drug.activeIngredient,
-          drug.concentration,
-          drug.gdklh,
-          drug.routeOfAdministration,
-          drug.dosageForm,
-          drug.expiryDate,
-          drug.manufacturer,
-          drug.manufacturingCountry,
-          drug.packaging,
-          drug.unit,
-          drug.quantity,
-          drug.unitPrice,
-          drug.drugGroup,
-          drug.tbmt,
-          drug.investor,
-          drug.contractorSelectionMethod,
-          drug.kqlcntUploadDate,
-          drug.decisionNumber,
-          drug.decisionDate,
-          drug.contractorNumber,
-          drug.location
-        ])
-      ];
+      // Create workbook and worksheet
+      const workbook = XLSX.utils.book_new();
+      const worksheet = XLSX.utils.json_to_sheet(exportResult.data, { header: Object.keys(COLUMN_HEADERS) });
 
-      const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
-      
-      // Set column widths
+      // Set column headers to Vietnamese
+      const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+      for (let col = range.s.c; col <= range.e.c; col++) {
+        const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
+        const englishHeader = worksheet[cellAddress]?.v;
+        if (englishHeader && COLUMN_HEADERS[englishHeader as keyof typeof COLUMN_HEADERS]) {
+          worksheet[cellAddress].v = COLUMN_HEADERS[englishHeader as keyof typeof COLUMN_HEADERS];
+        }
+      }
+
+      // Set column widths for better readability
       const columnWidths = [
-        { wch: 5 },   // STT
-        { wch: 30 },  // Tên thuốc
-        { wch: 25 },  // Tên hoạt chất
-        { wch: 15 },  // Nồng độ
-        { wch: 10 },  // GĐKLH
-        { wch: 15 },  // Đường dùng
-        { wch: 15 },  // Dạng bào chế
-        { wch: 12 },  // Hạn dùng
-        { wch: 25 },  // Tên cơ sở sản xuất
-        { wch: 15 },  // Nước sản xuất
-        { wch: 20 },  // Quy cách đóng gói
-        { wch: 10 },  // Đơn vị tính
-        { wch: 10 },  // Số lượng
-        { wch: 15 },  // Đơn giá
-        { wch: 20 },  // Nhóm thuốc
-        { wch: 15 },  // TBMT
-        { wch: 25 },  // Chủ đầu tư
-        { wch: 20 },  // Hình thức lựa chọn nhà thầu
-        { wch: 15 },  // Ngày đăng tải KQLCNT
-        { wch: 15 },  // Số quyết định
-        { wch: 15 },  // Ngày ban hành quyết định
-        { wch: 12 },  // Số nhà thầu
-        { wch: 20 }   // Địa điểm
+        { wch: 8 },   // stt
+        { wch: 25 },  // ten_thuoc
+        { wch: 25 },  // ten_hoat_chat
+        { wch: 15 },  // nong_do_ham_luong
+        { wch: 15 },  // dang_bao_che
+        { wch: 20 },  // dong_goi
+        { wch: 20 },  // ten_donvi_tinh
+        { wch: 20 },  // ten_duong_dung
+        { wch: 15 },  // so_dang_ky
+        { wch: 20 },  // ten_hang_sx
+        { wch: 20 },  // ten_nuoc_sx
+        { wch: 20 },  // ten_cong_ty
+        { wch: 15 },  // gia_chot
+        { wch: 20 },  // ten_nhom_thau
+        { wch: 15 },  // ma_goi_thau
+        { wch: 20 },  // ten_goi_thau
+        { wch: 15 },  // nam_thau
+        { wch: 20 },  // ten_don_vi
+        { wch: 15 },  // ma_cskcb
+        { wch: 20 },  // ten_cskcb
+        { wch: 15 },  // so_luong
+        { wch: 15 },  // don_gia
+        { wch: 15 }   // thanh_tien
       ];
       worksheet['!cols'] = columnWidths;
 
-      // Create workbook
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Danh sách thuốc");
+      // Add worksheet to workbook
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Tra cứu giá thuốc');
 
-      // Generate filename với format TraCuuGiaThuoc_X-Y
-      const firstId = exportResult.data[0]?.id || 1;
-      const lastId = exportResult.data[exportResult.data.length - 1]?.id || 1;
-      const filename = `TraCuuGiaThuoc_${firstId}-${lastId}.xlsx`;
+      // Generate filename
+      const filename = `TraCuuGiaThuoc_${batch.start}-${batch.end}.xlsx`;
 
-      // Export file
+      // Save file
       XLSX.writeFile(workbook, filename);
-
-      // Success message with detailed info
-      const limitedMessage = exportResult.limited 
-        ? ` (Giới hạn 1000 dòng đầu tiên từ ${exportResult.count.toLocaleString('vi-VN')} kết quả)`
-        : '';
 
       toast({
         title: "Xuất Excel thành công",
-        description: `Đã xuất ${exportResult.data.length.toLocaleString('vi-VN')} thuốc vào file ${filename}${limitedMessage}`,
+        description: `Đã xuất ${exportResult.data.length} bản ghi từ STT ${batch.start} đến ${batch.end}`,
       });
 
     } catch (error) {
-      console.error("Error exporting Excel:", error);
+      console.error('Export error:', error);
       toast({
         title: "Lỗi xuất Excel",
-        description: "Không thể xuất file Excel",
+        description: "Có lỗi xảy ra khi xuất dữ liệu. Vui lòng thử lại.",
         variant: "destructive"
       });
     } finally {
@@ -316,10 +301,6 @@ export default function Home() {
     }
     return num.toLocaleString('vi-VN');
   };
-
-  const displayedData = searchState.data;
-  const totalResults = searchState.count;
-  const totalPages = searchState.totalPages;
 
   // Calculate min/max/average/median prices from current results
   const { minPrice, maxPrice, averagePrice, medianPrice, tbmtOfMaxPriceDrug } = React.useMemo(() => {
@@ -492,39 +473,50 @@ export default function Home() {
         )}
 
         <div className="mt-4 flex flex-col gap-3">
-          <div className="flex flex-col md:flex-row gap-2 items-center">
-            <Button
-              onClick={() => setIsAISuggesterOpen(true)}
-              variant="outline"
-              className="w-full md:w-auto bg-accent hover:bg-accent/90 text-accent-foreground border-accent hover:border-accent/90 shadow-sm"
-              disabled={isSearching}
-            >
-              <Lightbulb className="mr-2 h-5 w-5" />
-              Gợi ý thuốc AI
-            </Button>
-            
-            <Button
-              onClick={handleExportExcel}
-              variant="outline"
-              className="w-full md:w-auto bg-green-50 hover:bg-green-100 text-green-700 border-green-200 hover:border-green-300 shadow-sm"
-              disabled={isSearching || isExporting || (!hasResults && !searchTerm && !hasAdvancedConditions)}
-            >
-              {isExporting ? (
-                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-              ) : (
-                <Download className="mr-2 h-5 w-5" />
-              )}
-              {isExporting ? "Đang xuất..." : "Xuất Excel"}
-            </Button>
-          </div>
+          {totalResults > 0 && (
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-600">Xuất Excel:</span>
+                <Select
+                  value={selectedBatch.toString()}
+                  onValueChange={(value) => setSelectedBatch(parseInt(value))}
+                >
+                  <SelectTrigger className="w-48">
+                    <SelectValue placeholder="Chọn batch để xuất" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {batches.map((batch) => (
+                      <SelectItem key={batch.index} value={batch.index.toString()}>
+                        {batch.start}-{batch.end} ({batch.count} bản ghi)
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                
+                <Button
+                  onClick={exportSelectedBatch}
+                  disabled={isExporting || totalBatches === 0}
+                  variant="outline"
+                  className="flex items-center gap-2"
+                >
+                  {isExporting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4" />
+                  )}
+                  {isExporting ? 'Đang xuất...' : 'Xuất Excel'}
+                </Button>
+              </div>
+            </div>
+          )}
           
           {/* Thông tin xuất Excel */}
           <div className="text-xs text-muted-foreground bg-green-50 p-2 rounded border border-green-200">
-            <strong>💡 Lưu ý xuất Excel:</strong>
+            <strong>💡 Hướng dẫn xuất Excel:</strong>
             <ul className="mt-1 space-y-1">
-              <li>• Xuất toàn bộ kết quả tìm kiếm hiện tại (không chỉ trang này)</li>
-              <li>• Giới hạn tối đa 1.000 dòng để bảo vệ tài nguyên hệ thống</li>
-              <li>• Header tiếng Việt có dấu, file format: TraCuuGiaThuoc_X-Y.xlsx</li>
+              <li>• Chọn batch cần xuất từ dropdown (mỗi batch tối đa 1.000 bản ghi)</li>
+              <li>• Xuất toàn bộ kết quả tìm kiếm trong batch được chọn</li>
+              <li>• File format: TraCuuGiaThuoc_X-Y.xlsx với header tiếng Việt</li>
             </ul>
           </div>
         </div>
@@ -682,12 +674,7 @@ export default function Home() {
         )}
       </main>
 
-      <React.Suspense fallback={<div>Loading AI features...</div>}>
-        <AIDrugSuggester
-          open={isAISuggesterOpen}
-          onOpenChange={setIsAISuggesterOpen}
-        />
-      </React.Suspense>
+
 
       <footer className="mt-12 text-center text-sm text-muted-foreground">
         <div className="space-y-1">
