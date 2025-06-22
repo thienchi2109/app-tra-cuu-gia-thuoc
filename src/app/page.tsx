@@ -25,7 +25,8 @@ import { DataTablePagination } from "@/components/DataTablePagination";
 import { Search, Lightbulb, Filter, X, FileText, Loader2, TrendingUp, TrendingDown, Clock } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getDatabaseStats, getUniqueValues } from "@/lib/supabase-optimized";
-import { useDebouncedSearch } from "@/hooks/use-debounced-search";
+import { useAdvancedSearch } from "@/hooks/use-advanced-search";
+import AdvancedSearchBuilder, { AdvancedSearchConfig } from "@/components/AdvancedSearchBuilder";
 
 const ADVANCED_FILTER_COLUMNS: Array<keyof DrugData> = [
   "drugName",
@@ -40,7 +41,7 @@ const ADVANCED_FILTER_COLUMNS: Array<keyof DrugData> = [
 
 export default function Home() {
   const [isAISuggesterOpen, setIsAISuggesterOpen] = useState(false);
-  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
   const [dbStats, setDbStats] = useState({ totalDrugs: 0, maxPrice: 0, minPrice: 0 });
   const [uniqueValues, setUniqueValues] = useState({
     dosageForms: [] as string[],
@@ -50,30 +51,30 @@ export default function Home() {
   
   const { toast } = useToast();
   
-  // Use the optimized search hook
+  // Use the advanced search hook
   const {
     searchState,
     searchTerm,
     currentPage,
     pageSize,
     sortConfig,
-    advancedFilters,
+    advancedConfig,
     handleSearch,
     handlePageChange,
     handlePageSizeChange,
     handleSort,
-    handleAdvancedFilter,
-    clearAdvancedFilters,
+    handleAdvancedConfigChange,
+    clearAdvancedConfig,
     clearSearch,
     triggerImmediateSearch,
     isSearching,
     hasResults,
     hasError,
-    hasFilters,
+    hasAdvancedConditions,
     isTyping,
     isPending,
     isActuallySearching
-  } = useDebouncedSearch({
+  } = useAdvancedSearch({
     debounceMs: 3000, // 3 giây sau khi ngưng gõ mới search  
     initialPageSize: 20
   });
@@ -120,8 +121,8 @@ export default function Home() {
     loadInitialData();
   }, [toast]);
 
-  const toggleAdvancedFilters = () => {
-    setShowAdvancedFilters(prev => !prev);
+  const toggleAdvancedSearch = () => {
+    setShowAdvancedSearch(prev => !prev);
   };
 
   const formatNumberWithThousandSeparator = (value: number | null | undefined) => {
@@ -139,28 +140,45 @@ export default function Home() {
   const totalResults = searchState.count;
   const totalPages = searchState.totalPages;
 
-  // Calculate min/max prices from current results
-  const { minPrice, maxPrice, tbmtOfMaxPriceDrug } = React.useMemo(() => {
+  // Calculate min/max/average/median prices from current results
+  const { minPrice, maxPrice, averagePrice, medianPrice, tbmtOfMaxPriceDrug } = React.useMemo(() => {
     if (displayedData.length === 0) {
-      return { minPrice: null, maxPrice: null, tbmtOfMaxPriceDrug: null };
+      return { minPrice: null, maxPrice: null, averagePrice: null, medianPrice: null, tbmtOfMaxPriceDrug: null };
     }
     let min = Infinity;
     let max = -Infinity;
     let maxDrugTbmt: string | null = null;
+    let sum = 0;
+    const prices: number[] = [];
     
     displayedData.forEach(drug => {
-      if (drug.unitPrice < min) {
-        min = drug.unitPrice;
+      const price = drug.unitPrice;
+      prices.push(price);
+      sum += price;
+      
+      if (price < min) {
+        min = price;
       }
-      if (drug.unitPrice > max) {
-        max = drug.unitPrice;
+      if (price > max) {
+        max = price;
         maxDrugTbmt = drug.tbmt;
       }
     });
 
+    // Calculate average
+    const average = sum / displayedData.length;
+    
+    // Calculate median
+    const sortedPrices = [...prices].sort((a, b) => a - b);
+    const median = sortedPrices.length % 2 === 0
+      ? (sortedPrices[sortedPrices.length / 2 - 1] + sortedPrices[sortedPrices.length / 2]) / 2
+      : sortedPrices[Math.floor(sortedPrices.length / 2)];
+
     return { 
       minPrice: min === Infinity ? null : min, 
       maxPrice: max === -Infinity ? null : max,
+      averagePrice: average,
+      medianPrice: median,
       tbmtOfMaxPriceDrug: maxDrugTbmt
     };
   }, [displayedData]);
@@ -171,12 +189,10 @@ export default function Home() {
         <div className="flex items-center justify-center md:justify-start mb-2">
           <PharmaLogo className="h-10 w-10 text-primary mr-3" />
           <h1 className="text-4xl font-headline font-bold text-primary">
-            PharmaPrice Navigator
+            PHẦN MỀM THAM KHẢO GIÁ THUỐC TRÚNG THẦU
           </h1>
         </div>
-        <p className="text-lg text-muted-foreground font-body">
-          Tìm kiếm real-time trong {dbStats.totalDrugs.toLocaleString('vi-VN')} thuốc từ Supabase ⚡
-        </p>
+       
         
                  {/* Hướng dẫn sử dụng */}
          <div className="mt-2 p-3 bg-blue-50 rounded-lg border border-blue-200">
@@ -227,7 +243,7 @@ export default function Home() {
             {/* Nút tìm kiếm chủ động */}
             <Button
               onClick={triggerImmediateSearch}
-              disabled={isActuallySearching || (!searchTerm.trim() && !hasFilters)}
+              disabled={isActuallySearching || (!searchTerm.trim() && !hasAdvancedConditions)}
               className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm px-4"
               title="Nhấn để tìm kiếm ngay (hoặc nhấn Enter)"
             >
@@ -242,20 +258,20 @@ export default function Home() {
 
           <div className="flex gap-2 w-full md:w-auto">
             <Button
-              onClick={toggleAdvancedFilters}
+              onClick={toggleAdvancedSearch}
               variant="outline"
               className="flex-1 md:flex-none shadow-sm border-primary text-primary hover:bg-primary/10"
               disabled={false} // Không disable
             >
               <Filter className="mr-2 h-5 w-5" />
-              Bộ lọc {hasFilters && '●'}
+              Tìm kiếm nâng cao {(advancedConfig.includeConditions.length > 0 || advancedConfig.excludeConditions.length > 0) && '●'}
             </Button>
 
-            {(searchTerm || hasFilters) && (
+            {(searchTerm || advancedConfig.includeConditions.length > 0 || advancedConfig.excludeConditions.length > 0) && (
               <Button
                 onClick={() => {
                   clearSearch();
-                  clearAdvancedFilters();
+                  clearAdvancedConfig();
                 }}
                 variant="ghost"
                 size="sm"
@@ -268,120 +284,15 @@ export default function Home() {
           </div>
         </div>
 
-        {showAdvancedFilters && (
-          <div className="mt-4 p-4 border-t border-border">
-            <div className="flex justify-between items-center mb-3">
-              <h3 className="text-lg font-semibold text-primary">Bộ lọc chi tiết theo cột</h3>
-                              <div className="flex gap-2">
-                  <Button
-                    onClick={triggerImmediateSearch}
-                    disabled={isActuallySearching}
-                    size="sm"
-                    className="bg-primary hover:bg-primary/90 text-primary-foreground"
-                  >
-                    {isActuallySearching ? (
-                      <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-                    ) : (
-                      <Search className="mr-1 h-4 w-4" />
-                    )}
-                    Áp dụng lọc
-                  </Button>
-                  <Button
-                    onClick={clearAdvancedFilters}
-                    variant="ghost"
-                    size="sm"
-                    className="text-muted-foreground hover:text-destructive"
-                    disabled={isActuallySearching || !hasFilters}
-                  >
-                    <X className="mr-1 h-4 w-4" />
-                    Xóa bộ lọc
-                  </Button>
-                </div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-3">
-              {ADVANCED_FILTER_COLUMNS.map((key) => (
-                <div key={key} className="space-y-1">
-                  <Label htmlFor={`filter-${key}`} className="text-sm font-medium text-muted-foreground">
-                    {COLUMN_HEADERS[key]}
-                  </Label>
-                  {key === 'dosageForm' ? (
-                    <Select
-                      value={advancedFilters[key] || ""}
-                      onValueChange={(value) => {
-                        handleAdvancedFilter(key, value === "all" ? "" : value);
-                        // Trigger search after a short delay to allow state to update
-                        setTimeout(() => triggerImmediateSearch(), 100);
-                      }}
-                      disabled={false}
-                    >
-                      <SelectTrigger className="w-full text-sm">
-                        <SelectValue placeholder={`Lọc theo ${COLUMN_HEADERS[key]}...`} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">Tất cả dạng bào chế</SelectItem>
-                        {uniqueValues.dosageForms.map(form => (
-                          <SelectItem key={form} value={form}>{form}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : key === 'drugGroup' ? (
-                    <Select
-                      value={advancedFilters[key] || ""}
-                      onValueChange={(value) => {
-                        handleAdvancedFilter(key, value === "all" ? "" : value);
-                        setTimeout(() => triggerImmediateSearch(), 100);
-                      }}
-                      disabled={false}
-                    >
-                      <SelectTrigger className="w-full text-sm">
-                        <SelectValue placeholder={`Lọc theo ${COLUMN_HEADERS[key]}...`} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">Tất cả nhóm thuốc</SelectItem>
-                        {uniqueValues.drugGroups.map(group => (
-                          <SelectItem key={group} value={group}>{group}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : key === 'concentration' ? (
-                    <Select
-                      value={advancedFilters[key] || ""}
-                      onValueChange={(value) => {
-                        handleAdvancedFilter(key, value === "all" ? "" : value);
-                        setTimeout(() => triggerImmediateSearch(), 100);
-                      }}
-                      disabled={false}
-                    >
-                      <SelectTrigger className="w-full text-sm">
-                        <SelectValue placeholder={`Lọc theo ${COLUMN_HEADERS[key]}...`} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">Tất cả nồng độ</SelectItem>
-                        {uniqueValues.concentrations.map(c => (
-                          <SelectItem key={c} value={c}>{c}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <Input
-                      id={`filter-${key}`}
-                      type={key === 'unitPrice' ? 'number' : 'search'}
-                      placeholder={`Lọc theo ${COLUMN_HEADERS[key]}...`}
-                      value={advancedFilters[key] || ""}
-                      onChange={(e) => handleAdvancedFilter(key, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          triggerImmediateSearch();
-                        }
-                      }}
-                      className="w-full text-sm"
-                      disabled={false}
-                    />
-                  )}
-                </div>
-              ))}
-            </div>
+        {showAdvancedSearch && (
+          <div className="mt-4">
+            <AdvancedSearchBuilder
+              config={advancedConfig}
+              onChange={handleAdvancedConfigChange}
+              onSearch={triggerImmediateSearch}
+              isSearching={isActuallySearching}
+              uniqueValues={uniqueValues}
+            />
           </div>
         )}
 
@@ -430,7 +341,7 @@ export default function Home() {
         {!isActuallySearching && !hasError && (
           <>
             <div className="mb-4 text-sm text-muted-foreground">
-              {searchTerm || hasFilters ? (
+              {searchTerm || advancedConfig.includeConditions.length > 0 || advancedConfig.excludeConditions.length > 0 ? (
                 <>Tìm thấy {totalResults.toLocaleString('vi-VN')} kết quả</>
               ) : (
                 <>Hiển thị {pageSize} thuốc đầu tiên từ {dbStats.totalDrugs.toLocaleString('vi-VN')} thuốc</>
@@ -438,33 +349,61 @@ export default function Home() {
               {searchTerm && (
                 <> cho "<strong>{searchTerm}</strong>"</>
               )}
+              {advancedConfig.includeConditions.length > 0 && (
+                <> với {advancedConfig.includeConditions.length} điều kiện thỏa mãn</>
+              )}
+              {advancedConfig.excludeConditions.length > 0 && (
+                <> và {advancedConfig.excludeConditions.length} điều kiện loại trừ</>
+              )}
             </div>
 
             {hasResults && (
-              <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-card shadow-md rounded-lg border">
-                <div className="flex items-center gap-2 p-3 rounded-md bg-secondary/30">
-                  <TrendingDown className="h-6 w-6 text-primary" />
-                  <div>
-                    <p className="text-sm text-muted-foreground">Đơn giá nhỏ nhất (trang hiện tại)</p>
-                    <p className="text-xl font-bold text-primary">
+              <div className="mb-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 p-4 bg-card shadow-md rounded-lg border">
+                <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/30">
+                  <TrendingDown className="h-5 w-5 text-primary flex-shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-foreground">Giá nhỏ nhất</p>
+                    <p className="text-lg font-bold text-primary truncate">
                       {formatNumberWithThousandSeparator(minPrice)} VNĐ
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 p-3 rounded-md bg-secondary/30">
-                  <TrendingUp className="h-6 w-6 text-accent" />
-                  <div>
-                    <p className="text-sm text-muted-foreground">Đơn giá lớn nhất (trang hiện tại)</p>
-                    <p className="text-xl font-bold text-accent">
+                <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/30">
+                  <TrendingUp className="h-5 w-5 text-accent flex-shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-foreground">Giá lớn nhất</p>
+                    <p className="text-lg font-bold text-accent truncate">
                       {formatNumberWithThousandSeparator(maxPrice)} VNĐ
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 p-3 rounded-md bg-secondary/30">
-                  <FileText className="h-6 w-6 text-chart-4" />
-                  <div>
-                    <p className="text-sm text-muted-foreground">TBMT (Giá Cao Nhất)</p>
-                    <p className="text-xl font-bold text-chart-4 truncate max-w-xs" title={tbmtOfMaxPriceDrug || undefined}>
+                <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/30">
+                  <div className="h-5 w-5 rounded-full bg-blue-500 flex-shrink-0 flex items-center justify-center">
+                    <span className="text-xs text-white font-bold">TB</span>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-foreground">Giá trung bình</p>
+                    <p className="text-lg font-bold text-blue-600 truncate">
+                      {formatNumberWithThousandSeparator(Math.round(averagePrice || 0))} VNĐ
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/30">
+                  <div className="h-5 w-5 rounded-full bg-green-500 flex-shrink-0 flex items-center justify-center">
+                    <span className="text-xs text-white font-bold">TV</span>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-foreground">Giá trung vị</p>
+                    <p className="text-lg font-bold text-green-600 truncate">
+                      {formatNumberWithThousandSeparator(Math.round(medianPrice || 0))} VNĐ
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/30">
+                  <FileText className="h-5 w-5 text-chart-4 flex-shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-foreground">TBMT (Giá Cao)</p>
+                    <p className="text-lg font-bold text-chart-4 truncate" title={tbmtOfMaxPriceDrug || undefined}>
                       {tbmtOfMaxPriceDrug || "N/A"}
                     </p>
                   </div>
@@ -519,10 +458,10 @@ export default function Home() {
               </div>
             )}
 
-            {!hasResults && !isActuallySearching && (searchTerm || hasFilters) && (
+            {!hasResults && !isActuallySearching && (searchTerm || advancedConfig.includeConditions.length > 0 || advancedConfig.excludeConditions.length > 0) && (
               <div className="text-center my-10">
                 <p className="text-lg text-muted-foreground">Không tìm thấy kết quả nào</p>
-                <p className="text-sm text-muted-foreground mt-2">Thử thay đổi từ khóa tìm kiếm hoặc bộ lọc</p>
+                <p className="text-sm text-muted-foreground mt-2">Thử thay đổi từ khóa tìm kiếm hoặc điều kiện tìm kiếm nâng cao</p>
               </div>
             )}
           </>
@@ -537,7 +476,11 @@ export default function Home() {
       </React.Suspense>
 
       <footer className="mt-12 text-center text-sm text-muted-foreground">
-        <p>&copy; {new Date().getFullYear()} PharmaPrice Navigator. Optimized with Real-time Search ⚡</p>
+        <div className="space-y-1">
+          <p>Phần mềm được phát triển bởi DS CK1. Nguyễn Thành Long và KS Nguyễn Thiện Chí</p>
+          <p>Phiên bản 06.2025</p>
+          <p>Email: thanhlongnguyen2013@gmail.com</p>
+        </div>
       </footer>
     </div>
   );

@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import type { SupabaseDrugData, DrugData } from '@/types';
+import type { AdvancedSearchConfig, SearchCondition } from '@/components/AdvancedSearchBuilder';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -198,6 +199,175 @@ export async function searchWithAdvancedFilters(
     };
   } catch (error) {
     console.error('Error in advanced search:', error);
+    throw error;
+  }
+}
+
+// Advanced search with complex conditions
+export async function searchWithAdvancedConditions(
+  searchTerm: string = '',
+  advancedConfig: AdvancedSearchConfig,
+  page: number = 1,
+  limit: number = 100,
+  sortBy?: keyof SupabaseDrugData,
+  sortOrder: 'asc' | 'desc' = 'asc'
+): Promise<{
+  data: DrugData[];
+  count: number;
+  page: number;
+  totalPages: number;
+}> {
+  try {
+    let query = supabase
+      .from('danh_muc_thuoc')
+      .select('*', { count: 'exact' });
+
+    // Map UI field names to database column names
+    const fieldMap: Record<keyof DrugData, keyof SupabaseDrugData> = {
+      id: 'id',
+      drugName: 'ten_thuoc',
+      activeIngredient: 'ten_hoat_chat',
+      concentration: 'nong_do',
+      gdklh: 'gdk_lh',
+      routeOfAdministration: 'duong_dung',
+      dosageForm: 'dang_bao_che',
+      expiryDate: 'han_dung',
+      manufacturer: 'ten_cssx',
+      manufacturingCountry: 'nuoc_san_xuat',
+      packaging: 'quy_cach',
+      unit: 'don_vi_tinh',
+      quantity: 'so_luong',
+      unitPrice: 'don_gia',
+      drugGroup: 'nhom_thuoc',
+      tbmt: 'ma_tbmt',
+      investor: 'chu_dau_tu',
+      contractorSelectionMethod: 'hinh_thuc_lcnt',
+      kqlcntUploadDate: 'ngay_dang_tai',
+      decisionNumber: 'so_quyet_dinh',
+      decisionDate: 'ngay_ban_hanh',
+      contractorNumber: 'so_nha_thau',
+      location: 'dia_diem'
+    };
+
+    // Helper function to build condition string
+    const buildCondition = (condition: SearchCondition): string => {
+      const dbField = fieldMap[condition.field];
+      const value = condition.value.trim();
+      
+      if (!value) return '';
+
+      switch (condition.operator) {
+        case 'contains':
+          return `${dbField}.ilike.%${value}%`;
+        case 'equals':
+          if (condition.field === 'unitPrice') {
+            return `${dbField}.eq.${value}`;
+          }
+          return `${dbField}.eq.${value}`;
+        case 'greater_than':
+          return `${dbField}.gt.${value}`;
+        case 'less_than':
+          return `${dbField}.lt.${value}`;
+        default:
+          return `${dbField}.ilike.%${value}%`;
+      }
+    };
+
+    // Build include conditions
+    if (advancedConfig.includeConditions.length > 0) {
+      const includeConditions = advancedConfig.includeConditions
+        .map(buildCondition)
+        .filter(c => c !== '');
+      
+      if (includeConditions.length > 0) {
+        if (advancedConfig.includeLogic === 'AND') {
+          // For AND logic, we need to chain multiple filters
+          includeConditions.forEach(condition => {
+            const [field, operator, value] = condition.split('.');
+            switch (operator) {
+              case 'ilike':
+                query = query.ilike(field, value);
+                break;
+              case 'eq':
+                query = query.eq(field, value);
+                break;
+              case 'gt':
+                query = query.gt(field, value);
+                break;
+              case 'lt':
+                query = query.lt(field, value);
+                break;
+            }
+          });
+        } else {
+          // For OR logic, use the or() method
+          query = query.or(includeConditions.join(','));
+        }
+      }
+    }
+
+    // Build exclude conditions (always OR logic)
+    if (advancedConfig.excludeConditions.length > 0) {
+      const excludeConditions = advancedConfig.excludeConditions
+        .map(buildCondition)
+        .filter(c => c !== '');
+      
+      if (excludeConditions.length > 0) {
+        // Use not() with or() for exclusions - need to negate the OR condition
+        excludeConditions.forEach(condition => {
+          const [field, operator, value] = condition.split('.');
+          switch (operator) {
+            case 'ilike':
+              query = query.not(field, 'ilike', value);
+              break;
+            case 'eq':
+              query = query.not(field, 'eq', value);
+              break;
+            case 'gt':
+              query = query.not(field, 'gt', value);
+              break;
+            case 'lt':
+              query = query.not(field, 'lt', value);
+              break;
+          }
+        });
+      }
+    }
+
+    // Add basic search if provided and no advanced conditions
+    if (searchTerm && searchTerm.trim() !== '' && 
+        advancedConfig.includeConditions.length === 0 && 
+        advancedConfig.excludeConditions.length === 0) {
+      const term = searchTerm.trim();
+      query = query.or(`ten_thuoc.ilike.%${term}%,ten_hoat_chat.ilike.%${term}%,nhom_thuoc.ilike.%${term}%,ten_cssx.ilike.%${term}%,ma_tbmt.ilike.%${term}%`);
+    }
+
+    // Add sorting
+    const sortColumn = sortBy || 'id';
+    query = query.order(sortColumn, { ascending: sortOrder === 'asc' });
+
+    // Add pagination
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
+    query = query.range(from, to);
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      console.error('Advanced conditions search error:', error);
+      throw error;
+    }
+
+    const totalPages = Math.ceil((count || 0) / limit);
+
+    return {
+      data: data?.map(transformSupabaseToUI) || [],
+      count: count || 0,
+      page,
+      totalPages
+    };
+  } catch (error) {
+    console.error('Error in advanced conditions search:', error);
     throw error;
   }
 }

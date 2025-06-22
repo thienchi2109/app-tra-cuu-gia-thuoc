@@ -56,22 +56,22 @@ const DrugDataTable: React.FC<DrugDataTableProps> = ({
       <div className="overflow-x-auto">
         <Table>
           <TableHeader>
-            <TableRow>
+            <TableRow className="bg-primary/10 hover:bg-primary/15">
               {displayedColumnHeaders.map((key) => (
                 <TableHead 
                   key={key} 
                   className={cn(
-                    "px-4 py-3 text-sm font-medium text-card-foreground",
+                    "px-4 py-3 text-sm font-medium text-primary border-b border-primary/20",
                     !WRAPPABLE_COLUMNS.includes(key) && "whitespace-nowrap"
                   )}
                 >
                   <Button
                     variant="ghost"
                     onClick={() => handleSort(key)}
-                    className="px-2 py-1 h-auto hover:bg-accent/50"
+                    className="px-2 py-1 h-auto hover:bg-accent/50 font-bold"
                     aria-label={`Sắp xếp theo ${COLUMN_HEADERS[key]}`}
                   >
-                    {COLUMN_HEADERS[key]}
+                    <span className="font-bold">{COLUMN_HEADERS[key]}</span>
                     {sortConfig?.key === key && (
                       <ArrowUpDown className={`ml-2 h-4 w-4 ${sortConfig.direction === "ascending" ? "" : "transform rotate-180"}`} />
                     )}
