@@ -22,7 +22,7 @@ import { DataTablePagination } from "@/components/DataTablePagination";
 import { Search, Filter, X, FileText, Loader2, TrendingUp, TrendingDown, Clock, LogOut, Download } from "lucide-react";
 import * as XLSX from 'xlsx';
 import { useToast } from "@/hooks/use-toast";
-import { getDatabaseStats, getUniqueValues, exportSearchResults } from "@/lib/supabase-optimized";
+import { getDatabaseStats, getUniqueValues, exportSearchResults, fetchInitialDrugs } from "@/lib/supabase-optimized";
 import { useAdvancedSearch } from "@/hooks/use-advanced-search";
 import AdvancedSearchBuilder, { AdvancedSearchConfig } from "@/components/AdvancedSearchBuilder";
 import { useRouter } from "next/navigation";
@@ -151,14 +151,25 @@ export default function Home() {
   const totalResults = searchState.count;
   const totalPages = searchState.totalPages;
 
+  // Determine if we're in search/filter mode
+  const hasSearchConditions = searchTerm || advancedConfig.includeConditions.length > 0 || advancedConfig.excludeConditions.length > 0;
+  
+  // Calculate the actual total records for batch calculation
+  const actualTotalRecords = hasSearchConditions ? totalResults : dbStats.totalDrugs;
+
   // Calculate batches for export
   const batchSize = 1000;
-  const totalBatches = Math.ceil(totalResults / batchSize);
+  const totalBatches = Math.ceil(actualTotalRecords / batchSize);
   const batches = Array.from({ length: totalBatches }, (_, index) => {
     const start = index * batchSize + 1;
-    const end = Math.min((index + 1) * batchSize, totalResults);
+    const end = Math.min((index + 1) * batchSize, actualTotalRecords);
     return { index, start, end, count: end - start + 1 };
   });
+
+  // Reset selectedBatch when search conditions change
+  React.useEffect(() => {
+    setSelectedBatch(0);
+  }, [searchTerm, advancedConfig.includeConditions.length, advancedConfig.excludeConditions.length]);
 
   // Export function with selected batch
   const exportSelectedBatch = async () => {
@@ -448,6 +459,10 @@ export default function Home() {
                 onClick={() => {
                   clearSearch();
                   clearAdvancedConfig();
+                  // Trigger search immediately to reload initial data
+                  setTimeout(() => {
+                    triggerImmediateSearch();
+                  }, 100); // Small delay to ensure state is cleared first
                 }}
                 variant="ghost"
                 size="sm"
@@ -473,7 +488,7 @@ export default function Home() {
         )}
 
         <div className="mt-4 flex flex-col gap-3">
-          {totalResults > 0 && (
+          {actualTotalRecords > 0 && (
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-600">Xuất Excel:</span>
