@@ -287,19 +287,66 @@ export function useAdvancedSearch(options: UseAdvancedSearchOptions = {}) {
   }, []);
 
   const clearSearch = useCallback(() => {
+    // Cancel previous request immediately
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    
+    // Reset states immediately - không tự động search
     setSearchTerm('');
     setCurrentPage(1);
     setSearchStatus({ isTyping: false, isPending: false, isSearching: false });
+    
+    // Reset search state to initial data immediately
+    setSearchState(prev => ({
+      ...prev,
+      isLoading: false,
+      error: null
+    }));
   }, []);
 
   const clearAdvancedConfig = useCallback(() => {
-    setAdvancedConfig({
+    const clearedConfig = {
       includeConditions: [],
-      includeLogic: 'AND',
+      includeLogic: 'AND' as const,
       excludeConditions: []
-    });
+    };
+    setAdvancedConfig(clearedConfig);
     setCurrentPage(1);
   }, []);
+
+  // Reset to initial data (for clear search)
+  const resetToInitialData = useCallback(async () => {
+    try {
+      // Cancel any ongoing requests
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+
+      setSearchStatus({ isTyping: false, isPending: false, isSearching: true });
+      setSearchState(prev => ({ ...prev, isLoading: true, error: null }));
+
+      const result = await searchDrugsRealtime('', 1, pageSize, 'id', 'asc');
+
+      setSearchState({
+        data: result.data,
+        count: result.count,
+        page: result.page,
+        totalPages: result.totalPages,
+        isLoading: false,
+        error: null
+      });
+      setSearchStatus({ isTyping: false, isPending: false, isSearching: false });
+    } catch (error: any) {
+      console.error('Reset to initial data error:', error);
+      setSearchState(prev => ({
+        ...prev,
+        isLoading: false,
+        error: error.message || 'Lỗi tải dữ liệu ban đầu'
+      }));
+      setSearchStatus({ isTyping: false, isPending: false, isSearching: false });
+    }
+  }, [pageSize]);
 
   // Trigger immediate search (for manual search button)
   const triggerImmediateSearch = useCallback(() => {
@@ -349,6 +396,7 @@ export function useAdvancedSearch(options: UseAdvancedSearchOptions = {}) {
     handleAdvancedConfigChange,
     clearSearch,
     clearAdvancedConfig,
+    resetToInitialData,
     triggerImmediateSearch
   };
 } 

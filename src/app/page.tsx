@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import type { DrugData } from "@/types";
+import React, { useState, useEffect, useCallback } from "react";
+import type { DrugData, SupabaseDrugData } from "@/types";
 import { COLUMN_HEADERS } from "@/types";
 import DrugDataTable from "@/components/DrugDataTable";
 // Conditional import for AI components to avoid build issues
@@ -22,9 +22,12 @@ import { DataTablePagination } from "@/components/DataTablePagination";
 import { Search, Filter, X, FileText, Loader2, TrendingUp, TrendingDown, Clock, LogOut, Download } from "lucide-react";
 import * as XLSX from 'xlsx';
 import { useToast } from "@/hooks/use-toast";
-import { getDatabaseStats, getUniqueValues, exportSearchResults, fetchInitialDrugs } from "@/lib/supabase-optimized";
+import { getDatabaseStats, getUniqueValues, exportSearchResults, fetchInitialDrugs, getSearchResultsStatistics } from "@/lib/supabase-optimized";
 import { useAdvancedSearch } from "@/hooks/use-advanced-search";
+import { useRowSelection } from "@/hooks/use-row-selection";
+import { useExportSelected } from "@/hooks/use-export-selected";
 import AdvancedSearchBuilder, { AdvancedSearchConfig } from "@/components/AdvancedSearchBuilder";
+import SelectionModeToggle from "@/components/SelectionModeToggle";
 import { useRouter } from "next/navigation";
 
 const ADVANCED_FILTER_COLUMNS: Array<keyof DrugData> = [
@@ -44,6 +47,14 @@ export default function Home() {
   const [isExporting, setIsExporting] = useState(false);
   const [selectedBatch, setSelectedBatch] = useState<number>(0); // 0-based batch index
   const [dbStats, setDbStats] = useState({ totalDrugs: 0, maxPrice: 0, minPrice: 0 });
+  const [searchStats, setSearchStats] = useState({
+    minPrice: null as number | null,
+    maxPrice: null as number | null,
+    averagePrice: null as number | null,
+    medianPrice: null as number | null,
+    tbmtOfMaxPriceDrug: null as string | null,
+    totalCount: 0
+  });
   const [uniqueValues, setUniqueValues] = useState({
     dosageForms: [] as string[],
     drugGroups: [] as string[],
@@ -88,6 +99,7 @@ export default function Home() {
     handleAdvancedConfigChange,
     clearAdvancedConfig,
     clearSearch,
+    resetToInitialData,
     triggerImmediateSearch,
     isSearching,
     hasResults,
@@ -106,6 +118,8 @@ export default function Home() {
     const loadInitialData = async () => {
       try {
         console.log("🚀 Loading initial data and stats...");
+        
+
         
         // Load database stats
         const stats = await getDatabaseStats();
@@ -133,8 +147,8 @@ export default function Home() {
       } catch (error) {
         console.error("❌ Error loading initial data:", error);
         toast({ 
-          title: "Lỗi", 
-          description: "Không thể tải dữ liệu ban đầu", 
+          title: "Lỗi kết nối", 
+          description: "Không thể kết nối database. Kiểm tra kết nối internet.", 
           variant: "destructive" 
         });
       }
@@ -150,6 +164,31 @@ export default function Home() {
   const displayedData = searchState.data;
   const totalResults = searchState.count;
   const totalPages = searchState.totalPages;
+
+  // Row selection management
+  const rowSelection = useRowSelection({
+    data: displayedData,
+    currentPage,
+    totalResults
+  });
+
+  // Export selected rows management
+  const exportSelected = useExportSelected({
+    sortConfig,
+    onSuccess: (count) => {
+      toast({
+        title: "Xuất Excel thành công",
+        description: `Đã xuất ${count} dòng đã chọn ra file Excel`,
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Lỗi xuất Excel",
+        description: error,
+        variant: "destructive"
+      });
+    }
+  });
 
   // Determine if we're in search/filter mode
   const hasSearchConditions = searchTerm || advancedConfig.includeConditions.length > 0 || advancedConfig.excludeConditions.length > 0;
@@ -170,6 +209,101 @@ export default function Home() {
   React.useEffect(() => {
     setSelectedBatch(0);
   }, [searchTerm, advancedConfig.includeConditions.length, advancedConfig.excludeConditions.length]);
+
+  // Load search statistics only when search is actually executed (not realtime)
+  const loadSearchStatistics = useCallback(async () => {
+    // Check if we have search conditions
+    const hasSearchConditions = (searchTerm && searchTerm.trim() !== '') || 
+                                (advancedConfig.includeConditions?.length > 0) || 
+                                (advancedConfig.excludeConditions?.length > 0);
+
+    // Only load statistics if there's search conditions AND actual results
+    if (!hasResults || !hasSearchConditions || totalResults === 0) {
+      console.log('⚠️ Resetting statistics - no search conditions or results');
+      // Reset to default values when no search
+      setSearchStats({
+        minPrice: null,
+        maxPrice: null,
+        averagePrice: null,
+        medianPrice: null,
+        tbmtOfMaxPriceDrug: null,
+        totalCount: 0
+      });
+      return;
+    }
+
+    try {
+      console.log("🔢 Loading search statistics after search execution...", {
+        searchTerm: searchTerm?.substring(0, 20),
+        includeConditions: advancedConfig.includeConditions?.length || 0,
+        excludeConditions: advancedConfig.excludeConditions?.length || 0,
+        totalResults
+      });
+      
+      // Map DrugData keys to SupabaseDrugData keys
+      const columnMap: Record<string, keyof SupabaseDrugData> = {
+        drugName: 'ten_thuoc',
+        activeIngredient: 'ten_hoat_chat',
+        concentration: 'nong_do',
+        dosageForm: 'dang_bao_che',
+        drugGroup: 'nhom_thuoc',
+        unitPrice: 'don_gia',
+        tbmt: 'ma_tbmt',
+        investor: 'chu_dau_tu',
+        manufacturer: 'ten_cssx'
+      };
+
+      const sortBy = sortConfig ? columnMap[sortConfig.key as string] : undefined;
+      const sortOrder = sortConfig?.direction === 'descending' ? 'desc' : 'asc';
+
+      const stats = await getSearchResultsStatistics(
+        searchTerm,
+        advancedConfig || { includeConditions: [], excludeConditions: [], includeLogic: 'AND' },
+        sortBy,
+        sortOrder
+      );
+      
+      setSearchStats(stats);
+      console.log(`✅ Search statistics loaded:`, {
+        minPrice: stats.minPrice,
+        maxPrice: stats.maxPrice,
+        averagePrice: stats.averagePrice?.toFixed(0),
+        medianPrice: stats.medianPrice?.toFixed(0),
+        totalCount: stats.totalCount,
+        recordsFromSearch: totalResults
+      });
+    } catch (error) {
+      console.error("❌ Error loading search statistics:", error);
+      // Keep existing values on error
+    }
+  }, [searchTerm, advancedConfig, sortConfig, hasResults, totalResults]);
+
+  // Load statistics when search results actually change (not on every keystroke)
+  React.useEffect(() => {
+    // Only trigger when we actually have search results and it's not currently searching
+    if (!isActuallySearching && hasResults && totalResults > 0) {
+      const hasSearchConditions = (searchTerm && searchTerm.trim() !== '') || 
+                                  (advancedConfig.includeConditions?.length > 0) || 
+                                  (advancedConfig.excludeConditions?.length > 0);
+      
+      if (hasSearchConditions) {
+        console.log('🔢 Triggering statistics load after search completion');
+        loadSearchStatistics();
+      }
+    }
+    // Reset statistics when no search conditions (initial load or after clear)
+    else if (!isActuallySearching && (!searchTerm && advancedConfig.includeConditions?.length === 0)) {
+      console.log('🔄 Resetting statistics - no search conditions');
+      setSearchStats({
+        minPrice: null,
+        maxPrice: null,
+        averagePrice: null,
+        medianPrice: null,
+        tbmtOfMaxPriceDrug: null,
+        totalCount: 0
+      });
+    }
+  }, [isActuallySearching, hasResults, totalResults]); // Removed dependencies that cause realtime calls
 
   // Export function with selected batch
   const exportSelectedBatch = async () => {
@@ -313,48 +447,27 @@ export default function Home() {
     return num.toLocaleString('vi-VN');
   };
 
-  // Calculate min/max/average/median prices from current results
+  // Use search statistics from server instead of calculating from current page data
   const { minPrice, maxPrice, averagePrice, medianPrice, tbmtOfMaxPriceDrug } = React.useMemo(() => {
-    if (displayedData.length === 0) {
-      return { minPrice: null, maxPrice: null, averagePrice: null, medianPrice: null, tbmtOfMaxPriceDrug: null };
+    // If we have search results, use search statistics; otherwise use empty values
+    if (hasResults && searchStats.totalCount > 0) {
+      return {
+        minPrice: searchStats.minPrice,
+        maxPrice: searchStats.maxPrice,
+        averagePrice: searchStats.averagePrice,
+        medianPrice: searchStats.medianPrice,
+        tbmtOfMaxPriceDrug: searchStats.tbmtOfMaxPriceDrug
+      };
     }
-    let min = Infinity;
-    let max = -Infinity;
-    let maxDrugTbmt: string | null = null;
-    let sum = 0;
-    const prices: number[] = [];
     
-    displayedData.forEach(drug => {
-      const price = drug.unitPrice;
-      prices.push(price);
-      sum += price;
-      
-      if (price < min) {
-        min = price;
-      }
-      if (price > max) {
-        max = price;
-        maxDrugTbmt = drug.tbmt;
-      }
-    });
-
-    // Calculate average
-    const average = sum / displayedData.length;
-    
-    // Calculate median
-    const sortedPrices = [...prices].sort((a, b) => a - b);
-    const median = sortedPrices.length % 2 === 0
-      ? (sortedPrices[sortedPrices.length / 2 - 1] + sortedPrices[sortedPrices.length / 2]) / 2
-      : sortedPrices[Math.floor(sortedPrices.length / 2)];
-
     return { 
-      minPrice: min === Infinity ? null : min, 
-      maxPrice: max === -Infinity ? null : max,
-      averagePrice: average,
-      medianPrice: median,
-      tbmtOfMaxPriceDrug: maxDrugTbmt
+      minPrice: null, 
+      maxPrice: null, 
+      averagePrice: null, 
+      medianPrice: null, 
+      tbmtOfMaxPriceDrug: null 
     };
-  }, [displayedData]);
+  }, [hasResults, searchStats]);
 
   return (
     <AuthGuard>
@@ -457,17 +570,38 @@ export default function Home() {
             {(searchTerm || advancedConfig.includeConditions.length > 0 || advancedConfig.excludeConditions.length > 0) && (
               <Button
                 onClick={() => {
+                  console.log('🔄 Clearing search and resetting to initial state');
+                  
+                  // Reset statistics immediately
+                  setSearchStats({
+                    minPrice: null,
+                    maxPrice: null,
+                    averagePrice: null,
+                    medianPrice: null,
+                    tbmtOfMaxPriceDrug: null,
+                    totalCount: 0
+                  });
+                  
+                  // Clear search conditions và reset data ngay lập tức
                   clearSearch();
                   clearAdvancedConfig();
-                  // Trigger search immediately to reload initial data
+                  
+                  // Show toast notification
+                  toast({
+                    title: "Đã xóa điều kiện tìm kiếm",
+                    description: "Tải lại dữ liệu...",
+                  });
+                  
+                  // Reset to initial data sau một chút để đảm bảo states được clear
                   setTimeout(() => {
-                    triggerImmediateSearch();
-                  }, 100); // Small delay to ensure state is cleared first
+                    resetToInitialData();
+                  }, 100);
                 }}
                 variant="ghost"
                 size="sm"
                 className="text-muted-foreground hover:text-destructive"
-                disabled={false} // Không disable
+                disabled={isActuallySearching} // Disable while searching
+                title="Xóa tất cả điều kiện tìm kiếm"
               >
                 <X className="h-4 w-4" />
               </Button>
@@ -561,29 +695,14 @@ export default function Home() {
 
         {!isActuallySearching && !hasError && (
           <>
-            <div className="mb-4 text-sm text-muted-foreground">
-              {searchTerm || advancedConfig.includeConditions.length > 0 || advancedConfig.excludeConditions.length > 0 ? (
-                <>Tìm thấy {totalResults.toLocaleString('vi-VN')} kết quả</>
-              ) : (
-                <>Hiển thị {pageSize} thuốc đầu tiên từ {dbStats.totalDrugs.toLocaleString('vi-VN')} thuốc</>
-              )}
-              {searchTerm && (
-                <> cho "<strong>{searchTerm}</strong>"</>
-              )}
-              {advancedConfig.includeConditions.length > 0 && (
-                <> với {advancedConfig.includeConditions.length} điều kiện thỏa mãn</>
-              )}
-              {advancedConfig.excludeConditions.length > 0 && (
-                <> và {advancedConfig.excludeConditions.length} điều kiện loại trừ</>
-              )}
-            </div>
+            {/* Bỏ hiển thị real-time count để tránh lag */}
 
             {hasResults && (
               <div className="mb-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 p-4 bg-card shadow-md rounded-lg border">
                 <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/30">
                   <TrendingDown className="h-5 w-5 text-primary flex-shrink-0" />
                   <div className="min-w-0">
-                    <p className="text-xs text-muted-foreground">Giá nhỏ nhất</p>
+                    <p className="text-xs text-muted-foreground">Giá nhỏ nhất (toàn bộ kết quả)</p>
                     <p className="text-lg font-bold text-primary truncate">
                       {formatNumberWithThousandSeparator(minPrice)} VNĐ
                     </p>
@@ -592,7 +711,7 @@ export default function Home() {
                 <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/30">
                   <TrendingUp className="h-5 w-5 text-accent flex-shrink-0" />
                   <div className="min-w-0">
-                    <p className="text-xs text-muted-foreground">Giá lớn nhất</p>
+                    <p className="text-xs text-muted-foreground">Giá lớn nhất (toàn bộ kết quả)</p>
                     <p className="text-lg font-bold text-accent truncate">
                       {formatNumberWithThousandSeparator(maxPrice)} VNĐ
                     </p>
@@ -603,7 +722,7 @@ export default function Home() {
                     <span className="text-xs text-white font-bold">TB</span>
                   </div>
                   <div className="min-w-0">
-                    <p className="text-xs text-muted-foreground">Giá trung bình</p>
+                    <p className="text-xs text-muted-foreground">Giá trung bình (toàn bộ kết quả)</p>
                     <p className="text-lg font-bold text-blue-600 truncate">
                       {formatNumberWithThousandSeparator(Math.round(averagePrice || 0))} VNĐ
                     </p>
@@ -614,7 +733,7 @@ export default function Home() {
                     <span className="text-xs text-white font-bold">TV</span>
                   </div>
                   <div className="min-w-0">
-                    <p className="text-xs text-muted-foreground">Giá trung vị</p>
+                    <p className="text-xs text-muted-foreground">Giá trung vị (toàn bộ kết quả)</p>
                     <p className="text-lg font-bold text-green-600 truncate">
                       {formatNumberWithThousandSeparator(Math.round(medianPrice || 0))} VNĐ
                     </p>
@@ -623,7 +742,7 @@ export default function Home() {
                 <div className="flex items-center gap-2 p-2 rounded-md bg-secondary/30">
                   <FileText className="h-5 w-5 text-chart-4 flex-shrink-0" />
                   <div className="min-w-0">
-                    <p className="text-xs text-muted-foreground">TBMT (Giá Cao)</p>
+                    <p className="text-xs text-muted-foreground">TBMT (Giá Cao Nhất)</p>
                     <p className="text-lg font-bold text-chart-4 truncate" title={tbmtOfMaxPriceDrug || undefined}>
                       {tbmtOfMaxPriceDrug || "N/A"}
                     </p>
@@ -632,31 +751,72 @@ export default function Home() {
               </div>
             )}
 
-            {/* Pagination controls trước bảng */}
-            <div className="mb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <span>Hiển thị:</span>
-                <Select
-                  value={pageSize.toString()}
-                  onValueChange={(value) => handlePageSizeChange(Number(value))}
-                >
-                  <SelectTrigger className="w-20 h-8">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="20">20</SelectItem>
-                    <SelectItem value="50">50</SelectItem>
-                    <SelectItem value="100">100</SelectItem>
-                  </SelectContent>
-                </Select>
-                <span>mục mỗi trang</span>
+            {/* Controls: Pagination, Selection Mode */}
+            <div className="mb-4 space-y-4">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <span>Hiển thị:</span>
+                    <Select
+                      value={pageSize.toString()}
+                      onValueChange={(value) => handlePageSizeChange(Number(value))}
+                    >
+                      <SelectTrigger className="w-20 h-8">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="20">20</SelectItem>
+                        <SelectItem value="50">50</SelectItem>
+                        <SelectItem value="100">100</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <span>mục mỗi trang</span>
+                  </div>
+
+                  <SelectionModeToggle
+                    selectionMode={rowSelection.selectionMode}
+                    onToggle={rowSelection.toggleSelectionMode}
+                    selectionCount={rowSelection.selectionStats.selectedCount}
+                    hasSelections={rowSelection.hasSelections}
+                    onClearSelections={rowSelection.clearAllSelections}
+                  />
+                </div>
+                
+                {totalPages > 1 && (
+                  <div className="text-sm text-muted-foreground">
+                    Trang {currentPage} / {totalPages}
+                  </div>
+                )}
               </div>
-              
-              {totalPages > 1 && (
-                <div className="text-sm text-muted-foreground">
-                  Trang {currentPage} / {totalPages} 
-                  ({((currentPage - 1) * pageSize + 1).toLocaleString('vi-VN')} - {Math.min(currentPage * pageSize, totalResults).toLocaleString('vi-VN')} 
-                  trong tổng số {totalResults.toLocaleString('vi-VN')} kết quả)
+
+              {/* Selection Stats */}
+              {rowSelection.selectionMode === 'select' && rowSelection.hasSelections && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-md">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm text-blue-700">
+                      <strong>Đã chọn:</strong> {rowSelection.selectionStats.selectedCount} dòng 
+                      • Trang hiện tại: {rowSelection.selectionStats.selectedOnCurrentPage}/{rowSelection.selectionStats.totalOnCurrentPage}
+                    </div>
+                    
+                    {rowSelection.hasSelections && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="bg-blue-600 text-white hover:bg-blue-700"
+                        onClick={() => exportSelected.exportSelected(rowSelection.selectedIds)}
+                        disabled={exportSelected.isExporting}
+                      >
+                        {exportSelected.isExporting ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                            Đang xuất...
+                          </>
+                        ) : (
+                          `Xuất Excel ${rowSelection.selectionStats.selectedCount} dòng đã chọn`
+                        )}
+                      </Button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -665,6 +825,13 @@ export default function Home() {
               data={displayedData}
               sortConfig={sortConfig}
               handleSort={handleSort}
+              selectionMode={rowSelection.selectionMode}
+              selectedIds={rowSelection.selectedIds}
+              onRowSelect={rowSelection.toggleRowSelection}
+              onSelectAll={rowSelection.selectAllCurrentPage}
+              onDeselectAll={rowSelection.deselectAllCurrentPage}
+              isCurrentPageFullySelected={rowSelection.isCurrentPageFullySelected}
+              isCurrentPagePartiallySelected={rowSelection.isCurrentPagePartiallySelected}
             />
 
             {totalPages > 1 && (
@@ -681,8 +848,8 @@ export default function Home() {
 
             {!hasResults && !isActuallySearching && (searchTerm || advancedConfig.includeConditions.length > 0 || advancedConfig.excludeConditions.length > 0) && (
               <div className="text-center my-10">
-                <p className="text-lg text-muted-foreground">Không tìm thấy kết quả nào</p>
-                <p className="text-sm text-muted-foreground mt-2">Thử thay đổi từ khóa tìm kiếm hoặc điều kiện tìm kiếm nâng cao</p>
+                <p className="text-lg text-muted-foreground">Không tìm thấy kết quả</p>
+                <p className="text-sm text-muted-foreground mt-2">Thử thay đổi từ khóa tìm kiếm hoặc điều kiện lọc</p>
               </div>
             )}
           </>
