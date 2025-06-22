@@ -139,40 +139,59 @@ export function useAdvancedSearch(options: UseAdvancedSearchOptions = {}) {
     }
   }, [mapSortToSupabase, pageSize]);
 
-  // Debounced search effect
+  // Status updates only
   useEffect(() => {
-    // Show typing status immediately if there's any search activity
     if (searchTerm !== '' || hasAdvancedConditions()) {
-      setSearchStatus(prev => ({ ...prev, isTyping: true, isPending: false }));
+      // Show typing status when user has search conditions but don't auto-search
+      setSearchStatus(prev => ({ ...prev, isTyping: true, isPending: false, isSearching: false }));
+    } else {
+      setSearchStatus(prev => ({ ...prev, isTyping: false, isPending: false, isSearching: false }));
     }
 
-    // Cancel previous timeout
-    if (debounceTimeoutRef.current) {
-      clearTimeout(debounceTimeoutRef.current);
-    }
-
-    // Cancel previous request
+    // Cancel any previous requests when conditions change
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
+  }, [searchTerm, advancedConfig, hasAdvancedConditions]);
 
-    // Create new abort controller
-    abortControllerRef.current = new AbortController();
-    const signal = abortControllerRef.current.signal;
+  // Initial data load on mount
+  useEffect(() => {
+    const loadInitialData = async () => {
+      try {
+        setSearchStatus(prev => ({ ...prev, isSearching: true, isPending: false }));
+        setSearchState(prev => ({ ...prev, isLoading: true, error: null }));
 
-    // Set up debounced search
-    debounceTimeoutRef.current = setTimeout(() => {
-      setSearchStatus(prev => ({ ...prev, isTyping: false, isPending: true }));
-      performSearch(searchTerm, currentPage, sortConfig, advancedConfig, signal);
-    }, debounceMs);
+        const result = await searchDrugsRealtime(
+          '',
+          1,
+          initialPageSize,
+          'id',
+          'asc'
+        );
 
-    // Cleanup
-    return () => {
-      if (debounceTimeoutRef.current) {
-        clearTimeout(debounceTimeoutRef.current);
+        setSearchState({
+          data: result.data,
+          count: result.count,
+          page: result.page,
+          totalPages: result.totalPages,
+          isLoading: false,
+          error: null
+        });
+        setSearchStatus(prev => ({ ...prev, isSearching: false }));
+      } catch (error: any) {
+        console.error('Initial load error:', error);
+        setSearchState(prev => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || 'Lỗi tải dữ liệu ban đầu'
+        }));
+        setSearchStatus(prev => ({ ...prev, isSearching: false }));
       }
     };
-  }, [searchTerm, currentPage, sortConfig, advancedConfig, performSearch, debounceMs, hasAdvancedConditions]);
+
+    // Load initial data on mount
+    loadInitialData();
+  }, []); // Only run on mount
 
   // Cleanup on unmount
   useEffect(() => {
@@ -199,7 +218,29 @@ export function useAdvancedSearch(options: UseAdvancedSearchOptions = {}) {
 
   const handlePageChange = useCallback((page: number) => {
     setCurrentPage(page);
-  }, []);
+    
+    // Always trigger search when page changes (including going back to page 1)
+    // Cancel debounce timeout
+    if (debounceTimeoutRef.current) {
+      clearTimeout(debounceTimeoutRef.current);
+    }
+
+    // Cancel previous request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    // Create new abort controller and search immediately
+    abortControllerRef.current = new AbortController();
+    const signal = abortControllerRef.current.signal;
+    
+    setSearchStatus(prev => ({ ...prev, isTyping: false, isPending: false }));
+    
+    // Use setTimeout to ensure currentPage state is updated
+    setTimeout(() => {
+      performSearch(searchTerm, page, sortConfig, advancedConfig, signal);
+    }, 0);
+  }, [performSearch, searchTerm, sortConfig, advancedConfig]);
 
   const handlePageSizeChange = useCallback((size: number) => {
     setPageSize(size);
@@ -212,9 +253,33 @@ export function useAdvancedSearch(options: UseAdvancedSearchOptions = {}) {
       if (prevSort && prevSort.key === key && prevSort.direction === "ascending") {
         direction = "descending";
       }
-      return { key, direction };
+      const newSort = { key, direction };
+      
+      // Trigger search immediately when sort changes
+      // Cancel debounce timeout
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
+      }
+
+      // Cancel previous request
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+
+      // Create new abort controller and search immediately
+      abortControllerRef.current = new AbortController();
+      const signal = abortControllerRef.current.signal;
+      
+      setSearchStatus(prev => ({ ...prev, isTyping: false, isPending: false }));
+      
+      // Use setTimeout to ensure sortConfig state is updated
+      setTimeout(() => {
+        performSearch(searchTerm, currentPage, newSort, advancedConfig, signal);
+      }, 0);
+      
+      return newSort;
     });
-  }, []);
+  }, [performSearch, searchTerm, currentPage, advancedConfig]);
 
   const handleAdvancedConfigChange = useCallback((config: AdvancedSearchConfig) => {
     setAdvancedConfig(config);
@@ -255,6 +320,8 @@ export function useAdvancedSearch(options: UseAdvancedSearchOptions = {}) {
     setSearchStatus(prev => ({ ...prev, isTyping: false, isPending: false }));
     performSearch(searchTerm, currentPage, sortConfig, advancedConfig, signal);
   }, [performSearch, searchTerm, currentPage, sortConfig, advancedConfig]);
+
+
 
   return {
     // State

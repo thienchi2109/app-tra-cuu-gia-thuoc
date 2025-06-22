@@ -11,6 +11,7 @@ const AIDrugSuggester = React.lazy(() =>
   }))
 );
 import PharmaLogo from "@/components/PharmaLogo";
+import AuthGuard from "@/components/AuthGuard";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -22,11 +23,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DataTablePagination } from "@/components/DataTablePagination";
-import { Search, Lightbulb, Filter, X, FileText, Loader2, TrendingUp, TrendingDown, Clock } from "lucide-react";
+import { Search, Lightbulb, Filter, X, FileText, Loader2, TrendingUp, TrendingDown, Clock, LogOut, Download } from "lucide-react";
+import * as XLSX from 'xlsx';
 import { useToast } from "@/hooks/use-toast";
-import { getDatabaseStats, getUniqueValues } from "@/lib/supabase-optimized";
+import { getDatabaseStats, getUniqueValues, exportSearchResults } from "@/lib/supabase-optimized";
 import { useAdvancedSearch } from "@/hooks/use-advanced-search";
 import AdvancedSearchBuilder, { AdvancedSearchConfig } from "@/components/AdvancedSearchBuilder";
+import { useRouter } from "next/navigation";
 
 const ADVANCED_FILTER_COLUMNS: Array<keyof DrugData> = [
   "drugName",
@@ -42,14 +45,36 @@ const ADVANCED_FILTER_COLUMNS: Array<keyof DrugData> = [
 export default function Home() {
   const [isAISuggesterOpen, setIsAISuggesterOpen] = useState(false);
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [dbStats, setDbStats] = useState({ totalDrugs: 0, maxPrice: 0, minPrice: 0 });
   const [uniqueValues, setUniqueValues] = useState({
     dosageForms: [] as string[],
     drugGroups: [] as string[],
     concentrations: [] as string[]
   });
+  const [userDisplayName, setUserDisplayName] = useState<string>("");
   
   const { toast } = useToast();
+  const router = useRouter();
+
+  // Load user display name from localStorage on client side
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const storedDisplayName = localStorage.getItem("userDisplayName");
+      const storedUsername = localStorage.getItem("username");
+      // Ưu tiên hiển thị tên tiếng Việt, nếu không có thì hiển thị username
+      setUserDisplayName(storedDisplayName || storedUsername || "Người dùng");
+    }
+  }, []);
+
+  const handleLogout = () => {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem("isLoggedIn");
+      localStorage.removeItem("username");
+      localStorage.removeItem("userDisplayName");
+    }
+    router.push("/login");
+  };
   
   // Use the advanced search hook
   const {
@@ -75,7 +100,7 @@ export default function Home() {
     isPending,
     isActuallySearching
   } = useAdvancedSearch({
-    debounceMs: 3000, // 3 giây sau khi ngưng gõ mới search  
+    debounceMs: 0, // Không debounce - chỉ tìm kiếm thủ công
     initialPageSize: 20
   });
 
@@ -123,6 +148,162 @@ export default function Home() {
 
   const toggleAdvancedSearch = () => {
     setShowAdvancedSearch(prev => !prev);
+  };
+
+  const handleExportExcel = async () => {
+    try {
+      setIsExporting(true);
+      
+      // Show loading toast
+      toast({
+        title: "Đang xuất Excel...",
+        description: "Vui lòng chờ trong giây lát",
+      });
+
+      // Get all search results (max 1000)
+      const sortColumn = sortConfig?.key ? 
+        (() => {
+          const columnMap: Record<keyof DrugData, string> = {
+            id: 'id',
+            drugName: 'ten_thuoc',
+            activeIngredient: 'ten_hoat_chat',
+            concentration: 'nong_do',
+            gdklh: 'gdk_lh',
+            routeOfAdministration: 'duong_dung',
+            dosageForm: 'dang_bao_che',
+            expiryDate: 'han_dung',
+            manufacturer: 'ten_cssx',
+            manufacturingCountry: 'nuoc_san_xuat',
+            packaging: 'quy_cach',
+            unit: 'don_vi_tinh',
+            quantity: 'so_luong',
+            unitPrice: 'don_gia',
+            drugGroup: 'nhom_thuoc',
+            tbmt: 'ma_tbmt',
+            investor: 'chu_dau_tu',
+            contractorSelectionMethod: 'hinh_thuc_lcnt',
+            kqlcntUploadDate: 'ngay_dang_tai',
+            decisionNumber: 'so_quyet_dinh',
+            decisionDate: 'ngay_ban_hanh',
+            contractorNumber: 'so_nha_thau',
+            location: 'dia_diem',
+          };
+          return columnMap[sortConfig.key] as any;
+        })() : 'id';
+
+      const sortOrder = sortConfig?.direction === 'ascending' ? 'asc' : 'desc';
+
+      const exportResult = await exportSearchResults(
+        searchTerm,
+        advancedConfig,
+        sortColumn,
+        sortOrder,
+        1000 // Max 1000 records
+      );
+
+      if (exportResult.data.length === 0) {
+        toast({
+          title: "Không có dữ liệu",
+          description: "Không có dữ liệu để xuất Excel",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      // Tạo worksheet với header tiếng Việt
+      const worksheetData = [
+        // Header row
+        Object.keys(COLUMN_HEADERS).map(key => COLUMN_HEADERS[key as keyof DrugData]),
+        // Data rows
+        ...exportResult.data.map(drug => [
+          drug.id,
+          drug.drugName,
+          drug.activeIngredient,
+          drug.concentration,
+          drug.gdklh,
+          drug.routeOfAdministration,
+          drug.dosageForm,
+          drug.expiryDate,
+          drug.manufacturer,
+          drug.manufacturingCountry,
+          drug.packaging,
+          drug.unit,
+          drug.quantity,
+          drug.unitPrice,
+          drug.drugGroup,
+          drug.tbmt,
+          drug.investor,
+          drug.contractorSelectionMethod,
+          drug.kqlcntUploadDate,
+          drug.decisionNumber,
+          drug.decisionDate,
+          drug.contractorNumber,
+          drug.location
+        ])
+      ];
+
+      const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+      
+      // Set column widths
+      const columnWidths = [
+        { wch: 5 },   // STT
+        { wch: 30 },  // Tên thuốc
+        { wch: 25 },  // Tên hoạt chất
+        { wch: 15 },  // Nồng độ
+        { wch: 10 },  // GĐKLH
+        { wch: 15 },  // Đường dùng
+        { wch: 15 },  // Dạng bào chế
+        { wch: 12 },  // Hạn dùng
+        { wch: 25 },  // Tên cơ sở sản xuất
+        { wch: 15 },  // Nước sản xuất
+        { wch: 20 },  // Quy cách đóng gói
+        { wch: 10 },  // Đơn vị tính
+        { wch: 10 },  // Số lượng
+        { wch: 15 },  // Đơn giá
+        { wch: 20 },  // Nhóm thuốc
+        { wch: 15 },  // TBMT
+        { wch: 25 },  // Chủ đầu tư
+        { wch: 20 },  // Hình thức lựa chọn nhà thầu
+        { wch: 15 },  // Ngày đăng tải KQLCNT
+        { wch: 15 },  // Số quyết định
+        { wch: 15 },  // Ngày ban hành quyết định
+        { wch: 12 },  // Số nhà thầu
+        { wch: 20 }   // Địa điểm
+      ];
+      worksheet['!cols'] = columnWidths;
+
+      // Create workbook
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Danh sách thuốc");
+
+      // Generate filename với format TraCuuGiaThuoc_X-Y
+      const firstId = exportResult.data[0]?.id || 1;
+      const lastId = exportResult.data[exportResult.data.length - 1]?.id || 1;
+      const filename = `TraCuuGiaThuoc_${firstId}-${lastId}.xlsx`;
+
+      // Export file
+      XLSX.writeFile(workbook, filename);
+
+      // Success message with detailed info
+      const limitedMessage = exportResult.limited 
+        ? ` (Giới hạn 1000 dòng đầu tiên từ ${exportResult.count.toLocaleString('vi-VN')} kết quả)`
+        : '';
+
+      toast({
+        title: "Xuất Excel thành công",
+        description: `Đã xuất ${exportResult.data.length.toLocaleString('vi-VN')} thuốc vào file ${filename}${limitedMessage}`,
+      });
+
+    } catch (error) {
+      console.error("Error exporting Excel:", error);
+      toast({
+        title: "Lỗi xuất Excel",
+        description: "Không thể xuất file Excel",
+        variant: "destructive"
+      });
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const formatNumberWithThousandSeparator = (value: number | null | undefined) => {
@@ -184,14 +365,31 @@ export default function Home() {
   }, [displayedData]);
 
   return (
-    <div className="min-h-screen bg-background text-foreground p-4 md:p-8">
-      <header className="mb-8 text-center md:text-left">
-        <div className="flex items-center justify-center md:justify-start mb-2">
-          <PharmaLogo className="h-10 w-10 text-primary mr-3" />
-          <h1 className="text-4xl font-headline font-bold text-primary">
-            PHẦN MỀM THAM KHẢO GIÁ THUỐC TRÚNG THẦU
-          </h1>
-        </div>
+    <AuthGuard>
+      <div className="min-h-screen bg-background text-foreground p-4 md:p-8">
+        <header className="mb-8 text-center md:text-left">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center">
+              <PharmaLogo className="h-10 w-10 text-primary mr-3" />
+              <h1 className="text-4xl font-headline font-bold text-primary">
+                PHẦN MỀM THAM KHẢO GIÁ THUỐC TRÚNG THẦU
+              </h1>
+            </div>
+            <div className="flex items-center gap-4">
+              <span className="text-sm text-muted-foreground">
+                Xin chào, {userDisplayName}
+              </span>
+              <Button
+                onClick={handleLogout}
+                variant="outline"
+                size="sm"
+                className="flex items-center gap-2"
+              >
+                <LogOut className="h-4 w-4" />
+                Đăng xuất
+              </Button>
+            </div>
+          </div>
        
         
                  {/* Hướng dẫn sử dụng */}
@@ -201,9 +399,9 @@ export default function Home() {
              <div>
                <p className="font-medium">Cách tìm kiếm:</p>
                <ul className="mt-1 space-y-1 text-xs">
-                 <li>• <span className="font-medium">Tự động:</span> Gõ xong → Chờ 3 giây → Tự tìm kiếm</li>
-                 <li>• <span className="font-medium">Chủ động:</span> Nhấn nút 🔍 hoặc Enter → Tìm ngay lập tức</li>
-                 <li>• <span className="font-medium">Trạng thái:</span> 🟢 Gõ | 🟡 Chờ | 🔵 Tìm kiếm</li>
+                 <li>• <span className="font-medium">Chủ động:</span> Nhấn nút 🔍 hoặc Enter để tìm kiếm</li>
+                 <li>• <span className="font-medium">Tìm kiếm nâng cao:</span> Thiết lập điều kiện → Nhấn "Tìm kiếm nâng cao"</li>
+                 <li>• <span className="font-medium">Trạng thái:</span> 🟢 Sẵn sàng | 🔵 Đang tìm kiếm</li>
                </ul>
              </div>
            </div>
@@ -232,10 +430,7 @@ export default function Home() {
               {isActuallySearching && (
                 <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-blue-500" />
               )}
-              {isPending && !isActuallySearching && (
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 rounded-full bg-yellow-500 animate-pulse" />
-              )}
-              {isTyping && !isPending && !isActuallySearching && (
+              {!isActuallySearching && (searchTerm || hasAdvancedConditions) && (
                 <div className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 rounded-full bg-green-500" />
               )}
             </div>
@@ -296,32 +491,51 @@ export default function Home() {
           </div>
         )}
 
-        <div className="mt-4 flex flex-col md:flex-row gap-2 items-center">
-          <Button
-            onClick={() => setIsAISuggesterOpen(true)}
-            variant="outline"
-            className="w-full md:w-auto bg-accent hover:bg-accent/90 text-accent-foreground border-accent hover:border-accent/90 shadow-sm"
-            disabled={isSearching}
-          >
-            <Lightbulb className="mr-2 h-5 w-5" />
-            Gợi ý thuốc AI
-          </Button>
+        <div className="mt-4 flex flex-col gap-3">
+          <div className="flex flex-col md:flex-row gap-2 items-center">
+            <Button
+              onClick={() => setIsAISuggesterOpen(true)}
+              variant="outline"
+              className="w-full md:w-auto bg-accent hover:bg-accent/90 text-accent-foreground border-accent hover:border-accent/90 shadow-sm"
+              disabled={isSearching}
+            >
+              <Lightbulb className="mr-2 h-5 w-5" />
+              Gợi ý thuốc AI
+            </Button>
+            
+            <Button
+              onClick={handleExportExcel}
+              variant="outline"
+              className="w-full md:w-auto bg-green-50 hover:bg-green-100 text-green-700 border-green-200 hover:border-green-300 shadow-sm"
+              disabled={isSearching || isExporting || (!hasResults && !searchTerm && !hasAdvancedConditions)}
+            >
+              {isExporting ? (
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+              ) : (
+                <Download className="mr-2 h-5 w-5" />
+              )}
+              {isExporting ? "Đang xuất..." : "Xuất Excel"}
+            </Button>
+          </div>
+          
+          {/* Thông tin xuất Excel */}
+          <div className="text-xs text-muted-foreground bg-green-50 p-2 rounded border border-green-200">
+            <strong>💡 Lưu ý xuất Excel:</strong>
+            <ul className="mt-1 space-y-1">
+              <li>• Xuất toàn bộ kết quả tìm kiếm hiện tại (không chỉ trang này)</li>
+              <li>• Giới hạn tối đa 1.000 dòng để bảo vệ tài nguyên hệ thống</li>
+              <li>• Header tiếng Việt có dấu, file format: TraCuuGiaThuoc_X-Y.xlsx</li>
+            </ul>
+          </div>
         </div>
       </div>
       
       <main>
-        {/* Hiển thị trạng thái gõ và tìm kiếm */}
-        {isTyping && !isPending && !isActuallySearching && (
+        {/* Hiển thị trạng thái tìm kiếm */}
+        {!isActuallySearching && (searchTerm || hasAdvancedConditions) && (
           <div className="flex justify-center items-center my-4">
             <div className="h-4 w-4 rounded-full bg-green-500 mr-2"></div>
-            <p className="text-sm text-muted-foreground">Đang nhập...</p>
-          </div>
-        )}
-        
-        {isPending && !isActuallySearching && (
-          <div className="flex justify-center items-center my-4">
-            <div className="h-4 w-4 rounded-full bg-yellow-500 animate-pulse mr-2"></div>
-            <p className="text-sm text-muted-foreground">Chuẩn bị tìm kiếm...</p>
+            <p className="text-sm text-muted-foreground">Sẵn sàng tìm kiếm - Nhấn Enter hoặc nút tìm kiếm</p>
           </div>
         )}
 
@@ -483,5 +697,6 @@ export default function Home() {
         </div>
       </footer>
     </div>
+    </AuthGuard>
   );
 } 

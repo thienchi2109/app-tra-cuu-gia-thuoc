@@ -397,6 +397,144 @@ export async function getUniqueValues(column: keyof SupabaseDrugData, limit: num
 }
 
 // Get database statistics (fast query)
+// Export all search results (max 1000 for performance)
+export async function exportSearchResults(
+  searchTerm: string = '',
+  advancedConfig: AdvancedSearchConfig,
+  sortBy?: keyof SupabaseDrugData,
+  sortOrder: 'asc' | 'desc' = 'asc',
+  maxLimit: number = 1000
+): Promise<{
+  data: DrugData[];
+  count: number;
+  limited: boolean;
+}> {
+  try {
+    let query = supabase
+      .from('danh_muc_thuoc')
+      .select('*', { count: 'exact' });
+
+    // Add basic search
+    if (searchTerm && searchTerm.trim() !== '') {
+      const term = searchTerm.trim();
+      query = query.or(`ten_thuoc.ilike.%${term}%,ten_hoat_chat.ilike.%${term}%,nhom_thuoc.ilike.%${term}%,ten_cssx.ilike.%${term}%,ma_tbmt.ilike.%${term}%`);
+    }
+
+    // Build advanced conditions similar to searchWithAdvancedConditions
+    const columnMap: Record<string, keyof SupabaseDrugData> = {
+      drugName: 'ten_thuoc',
+      activeIngredient: 'ten_hoat_chat',
+      concentration: 'nong_do',
+      dosageForm: 'dang_bao_che',
+      drugGroup: 'nhom_thuoc',
+      unitPrice: 'don_gia',
+      tbmt: 'ma_tbmt',
+      investor: 'chu_dau_tu',
+    };
+
+    const buildCondition = (condition: any): string => {
+      const dbColumn = columnMap[condition.field as keyof typeof columnMap];
+      if (!dbColumn) return '';
+
+      const value = condition.value?.toString().trim();
+      if (!value) return '';
+
+      switch (condition.operator) {
+        case 'contains':
+          return `${dbColumn}.ilike.%${value}%`;
+        case 'equals':
+          return condition.field === 'unitPrice' ? `${dbColumn}.eq.${value}` : `${dbColumn}.eq.${value}`;
+        case 'starts_with':
+          return `${dbColumn}.ilike.${value}%`;
+        case 'ends_with':
+          return `${dbColumn}.ilike.%${value}`;
+        case 'greater_than':
+          return `${dbColumn}.gt.${value}`;
+        case 'less_than':
+          return `${dbColumn}.lt.${value}`;
+        case 'greater_equal':
+          return `${dbColumn}.gte.${value}`;
+        case 'less_equal':
+          return `${dbColumn}.lte.${value}`;
+        default:
+          return `${dbColumn}.ilike.%${value}%`;
+      }
+    };
+
+    // Add include conditions (AND logic)
+    if (advancedConfig.includeConditions?.length > 0) {
+      const includeConditions = advancedConfig.includeConditions
+        .map(buildCondition)
+        .filter(Boolean);
+      
+      includeConditions.forEach(condition => {
+        if (condition.includes('.ilike.')) {
+          const [column, value] = condition.split('.ilike.');
+          query = query.ilike(column, value);
+        } else if (condition.includes('.eq.')) {
+          const [column, value] = condition.split('.eq.');
+          query = query.eq(column, value);
+        } else if (condition.includes('.gt.')) {
+          const [column, value] = condition.split('.gt.');
+          query = query.gt(column, parseFloat(value));
+        } else if (condition.includes('.lt.')) {
+          const [column, value] = condition.split('.lt.');
+          query = query.lt(column, parseFloat(value));
+        } else if (condition.includes('.gte.')) {
+          const [column, value] = condition.split('.gte.');
+          query = query.gte(column, parseFloat(value));
+        } else if (condition.includes('.lte.')) {
+          const [column, value] = condition.split('.lte.');
+          query = query.lte(column, parseFloat(value));
+        }
+      });
+    }
+
+    // Add exclude conditions (NOT logic)
+    if (advancedConfig.excludeConditions?.length > 0) {
+      const excludeConditions = advancedConfig.excludeConditions
+        .map(buildCondition)
+        .filter(Boolean);
+
+      excludeConditions.forEach(condition => {
+        if (condition.includes('.ilike.')) {
+          const [column, value] = condition.split('.ilike.');
+          query = query.not(column, 'ilike', value);
+        } else if (condition.includes('.eq.')) {
+          const [column, value] = condition.split('.eq.');
+          query = query.not(column, 'eq', value);
+        }
+      });
+    }
+
+    // Add sorting
+    const sortColumn = sortBy || 'id';
+    query = query.order(sortColumn, { ascending: sortOrder === 'asc' });
+
+    // Limit to maxLimit
+    query = query.limit(maxLimit);
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      console.error('Export search error:', error);
+      throw error;
+    }
+
+    const totalCount = count || 0;
+    const limited = totalCount > maxLimit;
+
+    return {
+      data: data?.map(transformSupabaseToUI) || [],
+      count: totalCount,
+      limited
+    };
+  } catch (error) {
+    console.error('Error exporting search results:', error);
+    throw error;
+  }
+}
+
 export async function getDatabaseStats(): Promise<{
   totalDrugs: number;
   avgPrice: number;
@@ -480,4 +618,51 @@ export function createDebouncedSearch(delay: number = 300) {
       }, delay);
     });
   };
+}
+
+// Authentication functions
+export async function authenticateUser(username: string, password: string): Promise<{ success: boolean; user?: any; message?: string }> {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, username, name, created_at') // Chỉ select các field cần thiết, không lấy password
+      .eq('username', username)
+      .eq('password', password)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return { success: false, message: 'Sai tên đăng nhập hoặc mật khẩu' };
+      }
+      console.error('Authentication error:', error);
+      return { success: false, message: 'Lỗi hệ thống' };
+    }
+
+    return { 
+      success: true, 
+      user: {
+        id: data.id,
+        username: data.username,
+        name: data.name, // Tên tiếng Việt có dấu
+        created_at: data.created_at
+      }
+    };
+  } catch (error) {
+    console.error('Authentication exception:', error);
+    return { success: false, message: 'Lỗi hệ thống' };
+  }
+}
+
+export async function createUsersTable(): Promise<{ success: boolean; message: string }> {
+  try {
+    // Note: This would typically be done via Supabase SQL editor
+    // We'll just return instructions for manual creation
+    return {
+      success: false,
+      message: 'Vui lòng tạo bảng users trong Supabase SQL Editor với câu lệnh: CREATE TABLE users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW());'
+    };
+  } catch (error) {
+    console.error('Error creating users table:', error);
+    return { success: false, message: 'Lỗi tạo bảng users' };
+  }
 } 

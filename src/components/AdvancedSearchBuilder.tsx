@@ -129,20 +129,6 @@ export default function AdvancedSearchBuilder({
   };
 
   const renderConditionRow = (condition: SearchCondition, type: 'include' | 'exclude') => {
-    const getFieldOptions = (field: keyof DrugData) => {
-      switch (field) {
-        case 'dosageForm':
-          return uniqueValues.dosageForms;
-        case 'drugGroup':
-          return uniqueValues.drugGroups;
-        case 'concentration':
-          return uniqueValues.concentrations;
-        default:
-          return [];
-      }
-    };
-
-    const hasOptions = ['dosageForm', 'drugGroup', 'concentration'].includes(condition.field);
 
     return (
       <div key={condition.id} className="flex gap-2 items-center p-3 bg-secondary/20 rounded-md">
@@ -189,31 +175,13 @@ export default function AdvancedSearchBuilder({
         {/* Giá trị */}
         <div className="flex-1 min-w-0">
           <Label className="text-xs text-muted-foreground">Giá trị</Label>
-          {hasOptions ? (
-            <Select
-              value={condition.value}
-              onValueChange={(value) => updateCondition(type, condition.id, { value })}
-            >
-              <SelectTrigger className="w-full text-sm">
-                <SelectValue placeholder="Chọn giá trị..." />
-              </SelectTrigger>
-              <SelectContent>
-                {getFieldOptions(condition.field).map(option => (
-                  <SelectItem key={option} value={option}>
-                    {option}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <Input
-              type={condition.field === 'unitPrice' ? 'number' : 'text'}
-              value={condition.value}
-              onChange={(e) => updateCondition(type, condition.id, { value: e.target.value })}
-              placeholder="Nhập giá trị..."
-              className="w-full text-sm"
-            />
-          )}
+          <Input
+            type={condition.field === 'unitPrice' ? 'number' : 'text'}
+            value={condition.value}
+            onChange={(e) => updateCondition(type, condition.id, { value: e.target.value })}
+            placeholder="Nhập giá trị..."
+            className="w-full text-sm"
+          />
         </div>
 
         {/* Nút xóa */}
