@@ -771,15 +771,20 @@ export async function getSearchResultsStatistics(
       .select('don_gia, ma_tbmt', { count: 'exact' })
       .not('don_gia', 'is', null); // Filter out null prices
 
-    // Add basic search - SAME logic as search function  
+    // Add basic search - targeting multiple relevant fields
     if (searchTerm && searchTerm.trim() !== '') {
       const term = searchTerm.trim();
-      console.log('🔍 Adding basic search for term:', term);
-      // Use single field first to test
-      query = query.ilike('ten_thuoc', `%${term}%`);
+      console.log('🔍 Adding basic search for term for statistics:', term);
+      query = query.or(
+        `ten_thuoc.ilike.%${term}%,` +
+        `ten_hoat_chat.ilike.%${term}%,` +
+        `nhom_thuoc.ilike.%${term}%,` +
+        `ten_cssx.ilike.%${term}%,` + // Manufacturer
+        `ma_tbmt.ilike.%${term}%`     // TBMT code
+      );
     }
 
-    // Build advanced conditions - SAME logic as search function
+    // Build advanced conditions
     const columnMap: Record<string, keyof SupabaseDrugData> = {
       drugName: 'ten_thuoc',
       activeIngredient: 'ten_hoat_chat',
