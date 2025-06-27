@@ -373,23 +373,30 @@ export async function searchWithAdvancedConditions(
 // Get unique values for filter dropdowns (with limit to avoid slowness)
 export async function getUniqueValues(column: keyof SupabaseDrugData, limit: number = 50): Promise<string[]> {
   try {
-    const { data, error } = await supabase
-      .from('danh_muc_thuoc')
-      .select(column)
-      .not(column, 'is', null)
-      .not(column, 'eq', '')
-      .order(column, { ascending: true })
-      .limit(limit);
-
-    if (error) {
-      console.error(`Error fetching unique ${column}:`, error);
+    // Ensure column_name is a valid SupabaseDrugData key before passing to RPC
+    const validColumns: Array<keyof SupabaseDrugData> = [
+      'ten_thuoc', 'ten_hoat_chat', 'nong_do', 'dang_bao_che', 'nhom_thuoc',
+      'ma_tbmt', 'chu_dau_tu', 'ten_cssx', 'nuoc_san_xuat', 'duong_dung',
+      'quy_cach', 'don_vi_tinh', 'hinh_thuc_lcnt', 'dia_diem'
+    ];
+    if (!validColumns.includes(column)) {
+      console.error(`Invalid column name for getUniqueValues: ${String(column)}`);
       return [];
     }
 
-    const unique = [...new Set(data?.map(item => (item as any)[column]?.toString().trim()).filter(Boolean))];
-    return unique.slice(0, limit);
+    const { data, error } = await supabase.rpc('rpc_get_distinct_values', {
+      column_name: column,
+      max_limit: limit
+    });
+
+    if (error) {
+      console.error(`Error fetching unique ${String(column)} via RPC:`, error);
+      return [];
+    }
+    // The RPC returns an array of strings directly
+    return data || [];
   } catch (error) {
-    console.error(`Error getting unique values for ${column}:`, error);
+    console.error(`Error getting unique values for ${String(column)}:`, error);
     return [];
   }
 }
@@ -547,32 +554,36 @@ export async function getDatabaseStats(): Promise<{
   minPrice: number;
 }> {
   try {
-    // Get count
-    const { count } = await supabase
-      .from('danh_muc_thuoc')
-      .select('*', { count: 'exact', head: true });
+    const { data, error } = await supabase.rpc('rpc_get_database_stats');
 
-    // Get price statistics with aggregation
-    const { data: priceStats } = await supabase
-      .from('danh_muc_thuoc')
-      .select('don_gia')
-      .not('don_gia', 'is', null)
-      .order('don_gia', { ascending: false })
-      .limit(1);
+    if (error) {
+      console.error('Error getting database stats via RPC:', error);
+      return {
+        totalDrugs: 0,
+        avgPrice: 0, // avgPrice không được trả về từ RPC này
+        maxPrice: 0,
+        minPrice: 0,
+      };
+    }
 
-    const { data: minPriceData } = await supabase
-      .from('danh_muc_thuoc')
-      .select('don_gia')
-      .not('don_gia', 'is', null)
-      .order('don_gia', { ascending: true })
-      .limit(1);
+    if (data && data.length > 0) {
+      const stats = data[0];
+      return {
+        totalDrugs: stats.total_drugs || 0,
+        avgPrice: 0, // avgPrice không được trả về từ RPC này, giữ nguyên là 0 hoặc tính toán nếu cần
+        maxPrice: stats.max_price || 0,
+        minPrice: stats.min_price || 0,
+      };
+    }
 
+    // Trường hợp không có dữ liệu hoặc lỗi không mong muốn
     return {
-      totalDrugs: count || 0,
-      avgPrice: 0, // Could implement if needed
-      maxPrice: priceStats?.[0]?.don_gia || 0,
-      minPrice: minPriceData?.[0]?.don_gia || 0,
+      totalDrugs: 0,
+      avgPrice: 0,
+      maxPrice: 0,
+      minPrice: 0,
     };
+
   } catch (error) {
     console.error('Error getting database stats:', error);
     return {
